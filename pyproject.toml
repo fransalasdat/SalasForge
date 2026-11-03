@@ -31,3 +31,6 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: database-backed integration tests (dedicated *_test PostgreSQL only)",
+]
