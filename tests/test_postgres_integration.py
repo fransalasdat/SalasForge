@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from salasforge.generator import COLUMNS, build_dataset, write_dataset
+from salasforge.generator import build_dataset, write_dataset
 from salasforge.loader import load_csvs
 
 pytestmark = pytest.mark.integration
