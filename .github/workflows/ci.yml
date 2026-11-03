@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Python ${{ matrix.python-version }}
+  unit:
+    name: Unit tests · Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -18,11 +18,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install editable package and development tools
-        run: python -m pip install -e '.[dev]'
-      - name: Lint
-        run: ruff check .
-      - name: Test
-        run: pytest -q
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.10.0"
+      - name: Resolve dependencies and create virtual environment
+        run: uv sync --all-extras --python "${{ matrix.python-version }}"
+      - name: Static analysis
+        run: uv run --no-sync ruff check .
+      - name: Unit tests
+        run: uv run --no-sync pytest -q -m "not integration"
       - name: Smoke test CLI
-        run: salasforge generate --orders 20 --output data/generated
+        run: uv run --no-sync salasforge generate --orders 20 --output data/generated
+
+  postgres:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: salasforge
+          POSTGRES_PASSWORD: test_password_only
+          POSTGRES_DB: salasforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U salasforge -d salasforge_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SALASFORGE_TEST_DSN: postgresql://salasforge:test_password_only@localhost:5432/salasforge_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.10.0"
+      - name: Install application and PostgreSQL test dependencies
+        run: uv sync --all-extras --python 3.12
+      - name: Test schema, idempotent replay and transaction rollback
+        run: uv run --no-sync pytest -q -m integration
