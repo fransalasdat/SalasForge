@@ -130,18 +130,41 @@ def build_dataset(
 
 
 def validate_dataset(data: dict[str, list[dict[str, Any]]]) -> None:
-    """Fail on missing relationships, over-receipt, or inconsistent order states."""
+    """Raise ValueError with context when relationships or business rules fail."""
     suppliers = {row["supplier_id"] for row in data["suppliers"]}
     materials = {row["material_id"] for row in data["materials"]}
     warehouses = {row["warehouse_id"] for row in data["warehouses"]}
     orders = {row["order_id"]: row for row in data["purchase_orders"]}
     items = {row["order_item_id"]: row for row in data["purchase_order_items"]}
     receipts = {row["receipt_id"]: row for row in data["goods_receipts"]}
-    assert all(row["supplier_id"] in suppliers for row in orders.values())
-    assert all(row["order_id"] in orders for row in items.values())
-    assert all(row["material_id"] in materials for row in items.values())
-    assert all(row["order_item_id"] in items for row in receipts.values())
-    assert all(row["warehouse_id"] in warehouses for row in receipts.values())
+    for order_id, order in orders.items():
+        if order["supplier_id"] not in suppliers:
+            raise ValueError(
+                f"purchase_orders: order_id={order_id}, "
+                f"supplier_id={order['supplier_id']} does not exist in suppliers"
+            )
+    for item_id, item in items.items():
+        if item["order_id"] not in orders:
+            raise ValueError(
+                f"purchase_order_items: order_item_id={item_id}, "
+                f"order_id={item['order_id']} does not exist in purchase_orders"
+            )
+        if item["material_id"] not in materials:
+            raise ValueError(
+                f"purchase_order_items: order_item_id={item_id}, "
+                f"material_id={item['material_id']} does not exist in materials"
+            )
+    for receipt_id, receipt in receipts.items():
+        if receipt["order_item_id"] not in items:
+            raise ValueError(
+                f"goods_receipts: receipt_id={receipt_id}, "
+                f"order_item_id={receipt['order_item_id']} does not exist in purchase_order_items"
+            )
+        if receipt["warehouse_id"] not in warehouses:
+            raise ValueError(
+                f"goods_receipts: receipt_id={receipt_id}, "
+                f"warehouse_id={receipt['warehouse_id']} does not exist in warehouses"
+            )
     quantities: dict[int, int] = defaultdict(int)
     for receipt in receipts.values():
         quantities[receipt["order_item_id"]] += receipt["received_qty"]
@@ -150,7 +173,12 @@ def validate_dataset(data: dict[str, list[dict[str, Any]]]) -> None:
     for item in items.values():
         item_id = item["order_item_id"]
         order_id = item["order_id"]
-        assert 0 <= quantities[item_id] <= item["ordered_qty"]
+        if not 0 <= quantities[item_id] <= item["ordered_qty"]:
+            raise ValueError(
+                f"purchase_order_items: order_item_id={item_id}, "
+                f"received_qty_total={quantities[item_id]}; "
+                f"expected between 0 and ordered_qty={item['ordered_qty']}"
+            )
         ordered_per_order[order_id] += item["ordered_qty"]
         received_per_order[order_id] += quantities[item_id]
     for order_id, order in orders.items():
@@ -159,17 +187,45 @@ def validate_dataset(data: dict[str, list[dict[str, Any]]]) -> None:
             "OPEN" if received == 0 else
             "CLOSED" if received == ordered_per_order[order_id] else "PARTIAL"
         )
-        assert order["status"] == expected
+        if order["status"] != expected:
+            raise ValueError(
+                f"purchase_orders: order_id={order_id}, status={order['status']}; "
+                f"expected={expected}"
+            )
     movements = data["inventory_movements"]
-    assert len(movements) == len(receipts)
-    assert len({row["receipt_id"] for row in movements}) == len(receipts)
+    if len(movements) != len(receipts):
+        raise ValueError(
+            f"inventory_movements: count={len(movements)}; "
+            f"expected one movement per receipt, count={len(receipts)}"
+        )
+    seen_receipts: set[int] = set()
     for movement in movements:
-        receipt = receipts[movement["receipt_id"]]
+        movement_id = movement["movement_id"]
+        receipt_id = movement["receipt_id"]
+        if receipt_id not in receipts:
+            raise ValueError(
+                f"inventory_movements: movement_id={movement_id}, "
+                f"receipt_id={receipt_id} does not exist in goods_receipts"
+            )
+        if receipt_id in seen_receipts:
+            raise ValueError(
+                f"inventory_movements: movement_id={movement_id}, receipt_id={receipt_id}; "
+                "expected one movement per receipt, duplicate receipt reference"
+            )
+        seen_receipts.add(receipt_id)
+        receipt = receipts[receipt_id]
         item = items[receipt["order_item_id"]]
-        assert movement["material_id"] == item["material_id"]
-        assert movement["warehouse_id"] == receipt["warehouse_id"]
-        assert movement["quantity_delta"] == receipt["received_qty"]
-        assert movement["movement_date"] == receipt["receipt_date"]
+        for field, expected_value in (
+            ("material_id", item["material_id"]),
+            ("warehouse_id", receipt["warehouse_id"]),
+            ("quantity_delta", receipt["received_qty"]),
+            ("movement_date", receipt["receipt_date"]),
+        ):
+            if movement[field] != expected_value:
+                raise ValueError(
+                    f"inventory_movements: movement_id={movement_id}, receipt_id={receipt_id}, "
+                    f"{field}={movement[field]}; expected={expected_value}"
+                )
 
 
 def write_dataset(
